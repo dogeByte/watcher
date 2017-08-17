@@ -3,7 +3,6 @@ package main
 import (
     "log"
     "github.com/go-fsnotify/fsnotify"
-    "path"
     "os"
     "io"
     "net/http"
@@ -16,25 +15,32 @@ import (
     "bufio"
     "fmt"
     "path/filepath"
+    "sync"
+    "path"
 )
 
 type Config struct {
-    Path  string
-    Ext   []string
-    Url   string
-    Retry uint64
+    Path       string
+    Exts, Urls []string
+    Retry      uint64
+}
+
+type SendInfo struct {
+    file, url string
 }
 
 var (
     config Config
     log2   *log.Logger
     lh     *os.File
+    sent   = make(map[string]int)
+    mutex  sync.Mutex
 )
 
 func main() {
     defer lh.Close()
     done := make(chan bool)
-    queue := make(chan string)
+    queue := make(chan SendInfo)
     go watch(queue)
     go upload(queue)
     <-done
@@ -78,14 +84,14 @@ func init() {
         }
         logging("文件夹 " + config.Path + " 创建成功")
     }
-    for k, v := range config.Ext {
+    for k, v := range config.Exts {
         if !strings.HasPrefix(v, ".") {
-            config.Ext[k] = "." + v
+            config.Exts[k] = "." + v
         }
     }
 }
 
-func watch(queue chan<- string) {
+func watch(queue chan<- SendInfo) {
     watcher, err := fsnotify.NewWatcher()
     if err != nil {
         fatal("文件夹 " + config.Path + " 初始化监听失败:" + fmt.Sprint(err))
@@ -94,23 +100,17 @@ func watch(queue chan<- string) {
     if err = watcher.Add(config.Path); err != nil {
         fatal("文件夹 " + config.Path + " 初始化监听失败: " + fmt.Sprint(err))
     }
-    logging("文件夹 " + config.Path + " 监听中...  文件类型: " + fmt.Sprint(config.Ext))
+    logging("文件夹 " + config.Path + " 监听中...  文件类型: " + fmt.Sprint(config.Exts))
+    filepath.Walk(config.Path, func(file string, info os.FileInfo, err error) error {
+        push(file, queue)
+        return nil
+    })
     for {
         select {
         case event := <-watcher.Events:
             if event.Op&fsnotify.Create == fsnotify.Create {
-                if len(config.Ext) == 0 {
-                    time.Sleep(time.Second)
-                    queue <- event.Name
-                } else {
-                    for _, ext := range config.Ext {
-                        if ext == path.Ext(event.Name) {
-                            time.Sleep(time.Second)
-                            queue <- event.Name
-                            break
-                        }
-                    }
-                }
+                time.Sleep(time.Millisecond * time.Duration(16))
+                push(event.Name, queue)
             }
         case err := <-watcher.Errors:
             logging(fmt.Sprint("文件夹 " + config.Path + " 监听异常: " + fmt.Sprint(err)))
@@ -118,19 +118,52 @@ func watch(queue chan<- string) {
     }
 }
 
-func upload(queue chan string) {
+func push(file string, queue chan<- SendInfo) {
+    if len(config.Exts) <= 0 {
+        for _, url := range config.Urls {
+            queue <- SendInfo{file, url}
+        }
+    } else {
+        for _, ext := range config.Exts {
+            if ext == path.Ext(file) {
+                for _, url := range config.Urls {
+                    queue <- SendInfo{file, url}
+                }
+                break
+            }
+        }
+    }
+}
+
+func upload(queue chan SendInfo) {
     for {
-        file := <-queue
-        status, respBody, err := post(file, config.Url)
+        sendInfo := <-queue
+        file, url := sendInfo.file, sendInfo.url
+        logging(file[strings.LastIndex(file, "\\")+1:] + " -> " + url + " 发送中...")
+        status, respBody, err := post(file, url)
         if status == 200 && err == nil {
-            logging(file[strings.LastIndex(file, "\\")+1:] + " 发送成功")
-            os.Remove(file)
+            logging(file[strings.LastIndex(file, "\\")+1:] + " -> " + url + " 发送成功")
+            if n, f := sent[file]; !f || n <= 0 {
+                if len(config.Urls) <= 1 {
+                    os.Remove(file)
+                } else {
+                    sent[file] = 1
+                }
+            } else {
+                if len(config.Urls) <= n+1 {
+                    delete(sent, file)
+                    os.Remove(file)
+                } else {
+                    sent[file] = n + 1
+                }
+            }
         } else {
             go func() {
                 time.Sleep(time.Duration(config.Retry) * time.Second)
-                queue <- file
+                queue <- sendInfo
             }()
-            logging(file[strings.LastIndex(file, "\\")+1:] + " 发送失败: " + fmt.Sprint(status, " ", respBody, " ", err))
+            logging(file[strings.LastIndex(file, "\\")+1:] + " -> " + url + " 发送失败: " + fmt.Sprint(status, " ",
+                respBody, " ", err))
         }
     }
 }
@@ -144,6 +177,7 @@ func post(file string, url string) (status int, respBody string, err error) {
     }
     fh, err := os.Open(file)
     if err != nil {
+        fmt.Println(123)
         return
     }
     defer fh.Close()
