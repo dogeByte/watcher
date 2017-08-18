@@ -15,7 +15,6 @@ import (
     "bufio"
     "fmt"
     "path/filepath"
-    "sync"
     "path"
 )
 
@@ -34,7 +33,6 @@ var (
     log2   *log.Logger
     lh     *os.File
     sent   = make(map[string]int)
-    mutex  sync.Mutex
 )
 
 func main() {
@@ -158,12 +156,11 @@ func upload(queue chan SendInfo) {
                 }
             }
         } else {
-            go func() {
-                time.Sleep(time.Duration(config.Retry) * time.Second)
-                queue <- sendInfo
-            }()
             logging(file[strings.LastIndex(file, "\\")+1:] + " -> " + url + " 发送失败: " + fmt.Sprint(status, " ",
                 respBody, " ", err))
+            time.AfterFunc(time.Duration(config.Retry)*time.Second, func() {
+                queue <- sendInfo
+            })
         }
     }
 }
