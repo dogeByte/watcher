@@ -19,9 +19,8 @@ import (
 )
 
 type Config struct {
-    Path       string
-    Exts, Urls []string
-    Retry      uint64
+    Paths, Exts, Urls []string
+    Retry             uint64
 }
 
 type SendInfo struct {
@@ -71,16 +70,18 @@ func init() {
     // 加载配置文件
     configBytes, err := ioutil.ReadFile("config.yaml")
     if err != nil {
-        fatal("配置文件加载失败")
+        fatal("配置文件加载失败: " + fmt.Sprint(err))
     }
     if err = yaml.Unmarshal(configBytes, &config); err != nil {
-        fatal("配置文件读取失败")
+        fatal("配置文件读取失败: " + fmt.Sprint(err))
     }
-    if _, err = os.Stat(config.Path); err != nil || os.IsNotExist(err) {
-        if err = os.MkdirAll(config.Path, 777); err != nil {
-            fatal("文件夹 " + config.Path + " 创建失败，请检查配置文件")
+    for _, p := range config.Paths {
+        if _, err = os.Stat(p); err != nil || os.IsNotExist(err) {
+            if err = os.MkdirAll(p, 777); err != nil {
+                fatal("文件夹 " + p + " 创建失败，请检查配置文件: " + fmt.Sprint(err))
+            }
+            logging("文件夹 " + p + " 创建成功")
         }
-        logging("文件夹 " + config.Path + " 创建成功")
     }
     for k, v := range config.Exts {
         if !strings.HasPrefix(v, ".") {
@@ -92,17 +93,21 @@ func init() {
 func watch(queue chan<- SendInfo) {
     watcher, err := fsnotify.NewWatcher()
     if err != nil {
-        fatal("文件夹 " + config.Path + " 初始化监听失败:" + fmt.Sprint(err))
+        fatal("初始化监听失败:" + fmt.Sprint(err))
     }
     defer watcher.Close()
-    if err = watcher.Add(config.Path); err != nil {
-        fatal("文件夹 " + config.Path + " 初始化监听失败: " + fmt.Sprint(err))
+    for _, p := range config.Paths {
+        if err = watcher.Add(p); err != nil {
+            fatal("文件夹 " + p + " 初始化监听失败: " + fmt.Sprint(err))
+        }
+        logging("文件夹 " + p + " 监听中...  文件类型: " + fmt.Sprint(config.Exts))
     }
-    logging("文件夹 " + config.Path + " 监听中...  文件类型: " + fmt.Sprint(config.Exts))
-    filepath.Walk(config.Path, func(file string, info os.FileInfo, err error) error {
-        push(file, queue)
-        return nil
-    })
+    for _, p := range config.Paths {
+        filepath.Walk(p, func(file string, info os.FileInfo, err error) error {
+            push(file, queue)
+            return nil
+        })
+    }
     for {
         select {
         case event := <-watcher.Events:
@@ -111,7 +116,7 @@ func watch(queue chan<- SendInfo) {
                 push(event.Name, queue)
             }
         case err := <-watcher.Errors:
-            logging(fmt.Sprint("文件夹 " + config.Path + " 监听异常: " + fmt.Sprint(err)))
+            logging("文件夹监听异常: " + fmt.Sprint(err))
         }
     }
 }
@@ -137,10 +142,10 @@ func upload(queue chan SendInfo) {
     for {
         sendInfo := <-queue
         file, url := sendInfo.file, sendInfo.url
-        logging(file[strings.LastIndex(file, "\\")+1:] + " -> " + url + " 发送中...")
+        logging(file + " -> " + url + " 发送中...")
         status, respBody, err := post(file, url)
         if status == 200 && err == nil {
-            logging(file[strings.LastIndex(file, "\\")+1:] + " -> " + url + " 发送成功")
+            logging(file + " -> " + url + " 发送成功")
             if n, f := sent[file]; !f || n <= 0 {
                 if len(config.Urls) <= 1 {
                     os.Remove(file)
@@ -156,8 +161,7 @@ func upload(queue chan SendInfo) {
                 }
             }
         } else {
-            logging(file[strings.LastIndex(file, "\\")+1:] + " -> " + url + " 发送失败: " + fmt.Sprint(status, " ",
-                respBody, " ", err))
+            logging(file + " -> " + url + " 发送失败: " + fmt.Sprint(status, " ", respBody, " ", err))
             time.AfterFunc(time.Duration(config.Retry)*time.Second, func() {
                 queue <- sendInfo
             })

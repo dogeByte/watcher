@@ -1,11 +1,11 @@
 ﻿# 监听路径
-path: D:\MeterDATA
+paths: ["D:\\1","D:\\2"]
 
 # 需要发送的文件扩展名
-exts: ["csv","txt"]
+exts: ["ini","zip"]
 
 # 服务器地址
-urls: ["http://192.168.203.190:8080/sensor/upload"]
+urls: ["http://171.221.206.245:30000/sensor/upload","http://广州"]
 
 # 发送失败到重新发送的时间间隔(s)
 retry: 30
