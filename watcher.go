@@ -19,8 +19,9 @@ import (
 )
 
 type Config struct {
-    Paths, Exts, Urls []string
-    Retry             uint64
+    Nows, Paths, Exts, Urls []string
+    Retry, Delay            uint64
+    Params                  map[string]string
 }
 
 type SendInfo struct {
@@ -40,6 +41,23 @@ func main() {
     queue := make(chan SendInfo)
     go watch(queue)
     go upload(queue)
+    for _, now := range config.Nows {
+        for _, url := range config.Urls {
+            logging(now + " -> " + url + " 发送中...")
+            go func(now, url string) {
+                for {
+                    status, respBody, err := post(now, url)
+                    if status == 200 && err == nil {
+                        logging(now + " -> " + url + " 发送成功")
+                        break
+                    } else {
+                        logging(now + " -> " + url + " 发送失败: " + fmt.Sprint(status, " ", respBody, " ", err))
+                        time.Sleep(time.Duration(config.Retry) * time.Second)
+                    }
+                }
+            }(now, url)
+        }
+    }
     <-done
 }
 
@@ -75,6 +93,7 @@ func init() {
     if err = yaml.Unmarshal(configBytes, &config); err != nil {
         fatal("配置文件读取失败: " + fmt.Sprint(err))
     }
+    fmt.Println(config)
     for _, p := range config.Paths {
         if _, err = os.Stat(p); err != nil || os.IsNotExist(err) {
             if err = os.MkdirAll(p, 777); err != nil {
@@ -112,7 +131,7 @@ func watch(queue chan<- SendInfo) {
         select {
         case event := <-watcher.Events:
             if event.Op&fsnotify.Create == fsnotify.Create {
-                time.Sleep(time.Millisecond * time.Duration(16))
+                time.Sleep(time.Second * time.Duration(config.Delay))
                 push(event.Name, queue)
             }
         case err := <-watcher.Errors:
@@ -172,13 +191,17 @@ func upload(queue chan SendInfo) {
 func post(file string, url string) (status int, respBody string, err error) {
     buf := &bytes.Buffer{}
     bodyWriter := multipart.NewWriter(buf)
+    for k, v := range config.Params {
+        if err = bodyWriter.WriteField(k, v); err != nil {
+            return
+        }
+    }
     fw, err := bodyWriter.CreateFormFile("file", file[strings.LastIndex(file, "\\")+1:])
     if err != nil {
         return
     }
     fh, err := os.Open(file)
     if err != nil {
-        fmt.Println(123)
         return
     }
     defer fh.Close()

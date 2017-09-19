@@ -1,11 +1,29 @@
-﻿# 监听路径
-paths: ["D:\\1","D:\\2"]
+﻿# 需要直接发送的文件
+nows:
+#  - D:\3\a.txt
+#  - D:\3\b.txt
+
+# 监听路径
+paths:
+  - D:\1
+  - D:\2
 
 # 需要发送的文件扩展名
-exts: ["ini","zip"]
+exts:
+  - txt
+  - zip
 
 # 服务器地址
-urls: ["http://171.221.206.245:30000/sensor/upload","http://广州"]
+urls:
+  - http://171.221.206.245:8080/sensor/upload
+#  - http://localhost:8080/sensor/upload
+
+# 请求参数
+params:
+  type: 0
+
+# 发送新文件的延迟时间(5)
+delay: 5
 
 # 发送失败到重新发送的时间间隔(s)
 retry: 30
